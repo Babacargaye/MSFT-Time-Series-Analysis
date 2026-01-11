@@ -1,0 +1,826 @@
+---
+title: "Advanced Time Series Analysis - MSFT Stock"
+subtitle: "ARIMA vs ARMA-GARCH Modeling"
+author: "Projet ST"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  message = FALSE, 
+  warning = FALSE,
+  fig.width = 10,
+  fig.height = 6
+)
+```
+
+# Data Preprocessing
+
+```{r libraries}
+library(quantmod)
+library(dplyr)
+library(zoo)
+library(lubridate)
+library(tseries)
+library(tidyr)
+library(forecast)
+library(rugarch)
+library(FinTS)
+library(ggplot2)
+library(moments)
+library(knitr)
+```
+
+## Data Import
+
+```{r import-data}
+getSymbols("MSFT", src = "yahoo",
+           from = "2000-01-01",
+           to   = "2023-01-01")
+
+df <- data.frame(
+  Date   = as.Date(index(MSFT)),
+  Open   = as.numeric(MSFT$MSFT.Open),
+  High   = as.numeric(MSFT$MSFT.High),
+  Low    = as.numeric(MSFT$MSFT.Low),
+  Close  = as.numeric(MSFT$MSFT.Close),
+  Volume = as.numeric(MSFT$MSFT.Volume)
+) %>% arrange(Date)
+
+head(df)
+```
+
+## Missing Values and Data Quality
+
+```{r data-quality}
+cat("Missing values per column:\n")
+print(colSums(is.na(df)))
+
+cat("\nTemporal structure (days between observations):\n")
+print(summary(as.numeric(diff(df$Date))))
+```
+
+## Log-Returns Computation
+
+```{r log-returns}
+df <- df %>%
+  mutate(
+    LogClose = log(Close),
+    Return   = c(NA, diff(LogClose)),
+    Daily_Return = (Close / lag(Close)) - 1
+  ) %>%
+  drop_na()
+
+cat("Return statistics:\n")
+print(summary(df$Return))
+```
+
+## Outlier Filtering
+
+```{r filter-extremes}
+q <- quantile(df$Return, probs = c(0.01, 0.99))
+cat("1% and 99% quantiles:", round(q, 4), "\n")
+df <- df %>% filter(Return >= q[1], Return <= q[2])
+cat("Observations after filtering:", nrow(df), "\n")
+```
+
+## Stationarity Tests
+
+```{r stationarity-tests}
+cat("=== ADF Test on Prices ===\n")
+adf_close <- adf.test(df$Close)
+cat("p-value:", round(adf_close$p.value, 4), "→", 
+    ifelse(adf_close$p.value > 0.05, "Non-stationary", "Stationary"), "\n\n")
+
+cat("=== ADF Test on Returns ===\n")
+adf_return <- adf.test(df$Return)
+cat("p-value:", round(adf_return$p.value, 4), "→", 
+    ifelse(adf_return$p.value < 0.05, "Stationary", "Non-stationary"), "\n")
+```
+
+\newpage
+
+# Exploratory Data Analysis
+
+## Price Evolution
+
+```{r plot-close}
+ggplot(df, aes(x = Date, y = Close)) +
+  geom_line() +
+  labs(title = "MSFT Stock Price (2000-2023)", y = "Price ($)", x = "Date") +
+  theme_minimal()
+```
+
+## Returns Distribution
+
+```{r plot-returns}
+ggplot(df, aes(x = Date, y = Return)) +
+  geom_line() +
+  labs(title = "MSFT Log-Returns", y = "Return", x = "Date") +
+  theme_minimal()
+```
+
+## Moving Averages
+
+```{r moving-averages}
+df <- df %>%
+  mutate(
+    MA20 = rollmean(Close, 20, fill = NA, align = "right"),
+    MA50 = rollmean(Close, 50, fill = NA, align = "right")
+  )
+
+ggplot(df, aes(x = Date)) +
+  geom_line(aes(y = Close, color = "Price"), alpha = 0.6) +
+  geom_line(aes(y = MA20, color = "MA(20)"), linetype = "dashed") +
+  geom_line(aes(y = MA50, color = "MA(50)"), linetype = "dashed") +
+  labs(title = "MSFT Price with Moving Averages", y = "Price ($)") +
+  scale_color_manual(values = c("black", "blue", "red")) +
+  theme_minimal()
+```
+
+## Seasonality Analysis
+
+```{r seasonality}
+df <- df %>% mutate(Month = month(Date, label = TRUE))
+
+monthly_avg <- df %>%
+  group_by(Month) %>%
+  summarise(Avg_Close = mean(Close, na.rm = TRUE))
+
+ggplot(monthly_avg, aes(x = Month, y = Avg_Close)) +
+  geom_col(fill = "steelblue") +
+  labs(title = "Average Closing Price by Month", y = "Average Price ($)") +
+  theme_minimal()
+```
+
+```{r decomposition}
+monthly_close <- df %>%
+  group_by(YearMonth = floor_date(Date, "month")) %>%
+  summarise(Close = mean(Close))
+
+ts_monthly <- ts(monthly_close$Close, frequency = 12)
+decomp <- decompose(ts_monthly, type = "additive")
+plot(decomp)
+```
+
+## Rolling Volatility
+
+```{r rolling-volatility}
+df <- df %>%
+  mutate(Rolling_Volatility = rollapply(Daily_Return, width = 21, FUN = sd, fill = NA, align = "right"))
+
+ggplot(df, aes(x = Date, y = Rolling_Volatility)) +
+  geom_line() +
+  labs(title = "21-Day Rolling Volatility", y = "Volatility") +
+  theme_minimal()
+```
+
+## Autocorrelation Analysis
+
+```{r acf-returns}
+par(mfrow = c(1, 2))
+acf(na.omit(df$Return), lag.max = 30, main = "ACF of Returns")
+qqnorm(df$Return, main = "Q-Q Plot of Returns")
+qqline(df$Return, col = "red")
+par(mfrow = c(1, 1))
+```
+
+
+
+
+
+
+\newpage
+
+# ARIMA Modeling
+
+## Introduction
+
+ARIMA (AutoRegressive Integrated Moving Average) models are fundamental tools for time series analysis (Box-Jenkins, 1970):
+
+- **AR(p)**: AutoRegressive component of order p
+- **I(d)**: Integration (differencing) of order d  
+- **MA(q)**: Moving Average component of order q
+
+The general model: $\phi(B)(1-B)^d X_t = c + \theta(B)\varepsilon_t$
+
+## Data Preparation
+
+```{r arima-data-prep}
+df_arima <- data.frame(
+  Date  = as.Date(zoo::index(MSFT)),
+  Close = as.numeric(Cl(MSFT))
+) %>%
+  arrange(Date) %>%
+  mutate(LogClose = log(Close), Return = c(NA, diff(LogClose))) %>%
+  drop_na()
+
+returns <- df_arima$Return
+
+cat("=== Data Summary ===\n")
+cat("Observations:", length(returns), "\n")
+cat("Period:", format(min(df_arima$Date), "%Y-%m-%d"), "to", format(max(df_arima$Date), "%Y-%m-%d"), "\n")
+cat("Mean:", round(mean(returns), 6), "| Std:", round(sd(returns), 6), "\n")
+cat("Skewness:", round(moments::skewness(returns), 4), "| Kurtosis:", round(moments::kurtosis(returns), 4), "\n")
+```
+
+## Stationarity Tests
+
+```{r arima-stationarity-tests}
+library(urca)
+
+cat("=== ADF Tests ===\n")
+adf_logprice <- adf.test(df_arima$LogClose)
+adf_returns <- adf.test(returns)
+
+cat("Log-prices: p =", round(adf_logprice$p.value, 4), "→", 
+    ifelse(adf_logprice$p.value > 0.05, "Non-stationary", "Stationary"), "\n")
+cat("Returns: p =", round(adf_returns$p.value, 4), "→", 
+    ifelse(adf_returns$p.value < 0.05, "Stationary", "Non-stationary"), "\n")
+
+kpss_returns <- kpss.test(returns)
+cat("\nKPSS on returns: p =", round(kpss_returns$p.value, 4), "→",
+    ifelse(kpss_returns$p.value > 0.05, "Stationary", "Non-stationary"), "\n")
+```
+
+**Interpretation:** Log-prices are non-stationary (unit root), while returns are stationary — suitable for ARIMA(p,0,q) modeling without differencing.
+
+## ACF/PACF Analysis
+
+```{r arima-acf-pacf, fig.height=8}
+# Train/test split
+n_obs <- length(returns)
+n_train_arima <- floor(0.8 * n_obs)
+n_test_arima <- n_obs - n_train_arima
+
+returns_train <- returns[1:n_train_arima]
+returns_test <- returns[(n_train_arima + 1):n_obs]
+dates_train_arima <- df_arima$Date[1:n_train_arima]
+dates_test_arima <- df_arima$Date[(n_train_arima + 1):n_obs]
+
+cat("Training:", n_train_arima, "obs | Test:", n_test_arima, "obs\n")
+
+par(mfrow = c(2, 2))
+acf(returns_train, lag.max = 40, main = "ACF of Returns")
+pacf(returns_train, lag.max = 40, main = "PACF of Returns")
+acf(returns_train^2, lag.max = 40, main = "ACF of Squared Returns")
+pacf(returns_train^2, lag.max = 40, main = "PACF of Squared Returns")
+par(mfrow = c(1, 1))
+```
+
+**Interpretation:** Weak autocorrelation in returns (market efficiency), but strong autocorrelation in squared returns reveals volatility clustering (ARCH effects).
+
+## Model Selection
+
+```{r arima-model-selection}
+cat("=== Grid Search ===\n\n")
+
+orders_list <- list(c(0,0,0), c(1,0,0), c(0,0,1), c(1,0,1), c(2,0,0), c(0,0,2), c(2,0,2), c(3,0,0))
+
+results <- data.frame(Model = character(), AIC = numeric(), BIC = numeric(), stringsAsFactors = FALSE)
+
+for (ord in orders_list) {
+  fit_temp <- tryCatch(Arima(returns_train, order = ord, include.mean = TRUE), error = function(e) NULL)
+  if (!is.null(fit_temp)) {
+    results <- rbind(results, data.frame(
+      Model = sprintf("ARIMA(%d,%d,%d)", ord[1], ord[2], ord[3]),
+      AIC = round(AIC(fit_temp), 2), BIC = round(BIC(fit_temp), 2)))
+  }
+}
+
+results <- results[order(results$AIC), ]
+print(results, row.names = FALSE)
+```
+
+```{r arima-auto-selection}
+arima_model <- auto.arima(returns_train, d = 0, max.p = 5, max.q = 5,
+                          seasonal = FALSE, stationary = TRUE,
+                          stepwise = FALSE, approximation = FALSE, trace = TRUE)
+
+p_order <- arima_model$arma[1]
+q_order <- arima_model$arma[2]
+
+cat("\n→ Selected: ARIMA(", p_order, ",0,", q_order, ")\n", sep = "")
+print(summary(arima_model))
+```
+
+## Coefficient Analysis
+
+```{r arima-coefficients}
+if (length(coef(arima_model)) > 0) {
+  coefs <- coef(arima_model)
+  se <- sqrt(diag(vcov(arima_model)))
+  t_stats <- coefs / se
+  p_values <- 2 * (1 - pnorm(abs(t_stats)))
+  
+  coef_table <- data.frame(
+    Coefficient = names(coefs),
+    Estimate = round(coefs, 6),
+    Std.Error = round(se, 6),
+    t.value = round(t_stats, 4),
+    p.value = round(p_values, 4)
+  )
+  print(coef_table, row.names = FALSE)
+} else {
+  cat("Model: ARIMA(0,0,0) - White Noise (no coefficients)\n")
+}
+```
+
+## Diagnostic Plots
+
+```{r arima-diagnostics-plots, fig.height=10}
+resid_arima <- residuals(arima_model)
+
+par(mfrow = c(3, 2))
+
+plot(dates_train_arima, resid_arima, type = "l", col = "steelblue",
+     main = "Residuals Over Time", xlab = "Date", ylab = "Residuals")
+abline(h = 0, col = "red", lty = 2, lwd = 2)
+
+# 2. Histogram of residuals
+hist(resid_arima, breaks = 50, probability = TRUE, col = "lightblue",
+     main = "Distribution of Residuals", xlab = "Residuals", border = "white")
+curve(dnorm(x, mean = mean(resid_arima), sd = sd(resid_arima)), 
+      add = TRUE, col = "red", lwd = 2)
+legend("topright", "Normal density", col = "red", lwd = 2, bty = "n")
+
+# 3. Q-Q Plot
+qqnorm(resid_arima, main = "Q-Q Plot of Residuals")
+qqline(resid_arima, col = "red", lwd = 2)
+
+# 4. ACF of residuals
+acf(resid_arima, lag.max = 30, main = "ACF of Residuals", col = "darkblue")
+
+# 5. ACF of squared residuals
+acf(resid_arima^2, lag.max = 30, main = "ACF of Squared Residuals", col = "darkblue")
+
+# 6. PACF of residuals
+pacf(resid_arima, lag.max = 30, main = "PACF of Residuals", col = "darkred")
+
+par(mfrow = c(1, 1))
+```
+
+The residuals fluctuate around zero as expected, but we observe volatility clustering: periods of high volatility (early 2000s, 2008-2009 crisis) alternate with calmer periods. This heteroskedasticity violates the constant variance assumption of ARIMA.
+
+The histogram shows a leptokurtic distribution (more peaked than normal) with heavier tails, typical of financial returns. The Q-Q plot confirms departures from normality at both tails.
+
+The ACF of residuals shows most autocorrelations within confidence bands, indicating adequate capture of linear dependence. However, the ACF of squared residuals reveals significant autocorrelations at multiple lags, providing evidence of ARCH effects. This confirms that while ARIMA captures mean dynamics, a GARCH component is needed for variance modeling.
+
+```{r arima-diagnostic-tests}
+cat("=== Statistical Diagnostic Tests ===\n\n")
+
+# 1. Ljung-Box Test for autocorrelation
+cat("1. LJUNG-BOX TEST (Autocorrelation in Residuals)\n")
+cat("   H0: No autocorrelation up to lag 20\n")
+lb_test <- Box.test(resid_arima, lag = 20, type = "Ljung-Box", fitdf = p_order + q_order)
+cat("   Q-statistic:", round(lb_test$statistic, 4), "\n")
+cat("   p-value:", round(lb_test$p.value, 4), "\n")
+cat("   →", ifelse(lb_test$p.value > 0.05, 
+    "PASS: No significant autocorrelation (white noise residuals)", 
+    "FAIL: Autocorrelation detected - model may be misspecified"), "\n\n")
+
+# 2. Ljung-Box on squared residuals
+cat("2. LJUNG-BOX TEST (ARCH Effects in Squared Residuals)\n")
+cat("   H0: No autocorrelation in squared residuals\n")
+lb_sq_test <- Box.test(resid_arima^2, lag = 20, type = "Ljung-Box")
+cat("   Q-statistic:", round(lb_sq_test$statistic, 4), "\n")
+cat("   p-value:", round(lb_sq_test$p.value, 4), "\n")
+cat("   →", ifelse(lb_sq_test$p.value > 0.05, 
+    "PASS: No ARCH effects", 
+    "FAIL: ARCH effects present - consider GARCH modeling"), "\n\n")
+
+# 3. ARCH-LM Test
+cat("3. ARCH-LM TEST (Conditional Heteroskedasticity)\n")
+cat("   H0: No ARCH effects (homoskedastic residuals)\n")
+arch_test_resid <- ArchTest(resid_arima, lags = 12)
+cat("   LM-statistic:", round(arch_test_resid$statistic, 4), "\n")
+cat("   p-value:", round(arch_test_resid$p.value, 4), "\n")
+cat("   →", ifelse(arch_test_resid$p.value > 0.05, 
+    "PASS: Homoskedastic residuals", 
+    "FAIL: Heteroskedasticity detected - GARCH recommended"), "\n\n")
+
+# 4. Jarque-Bera Test for normality
+cat("4. JARQUE-BERA TEST (Normality)\n")
+cat("   H0: Residuals are normally distributed\n")
+jb_test <- jarque.bera.test(resid_arima)
+cat("   JB-statistic:", round(jb_test$statistic, 4), "\n")
+cat("   p-value:", format(jb_test$p.value, scientific = TRUE), "\n")
+cat("   →", ifelse(jb_test$p.value > 0.05, 
+    "PASS: Residuals are normally distributed", 
+    "FAIL: Non-normality (fat tails) - typical for financial data"), "\n\n")
+
+# 5. Shapiro-Wilk Test (on a sample if n > 5000)
+cat("5. SHAPIRO-WILK TEST (Normality)\n")
+if (length(resid_arima) > 5000) {
+  set.seed(123)
+  sample_resid <- sample(resid_arima, 5000)
+  sw_test <- shapiro.test(sample_resid)
+  cat("   (Performed on random sample of 5000 observations)\n")
+} else {
+  sw_test <- shapiro.test(resid_arima)
+}
+cat("   W-statistic:", round(sw_test$statistic, 4), "\n")
+cat("   p-value:", format(sw_test$p.value, scientific = TRUE), "\n")
+cat("   →", ifelse(sw_test$p.value > 0.05, 
+    "PASS: Residuals are normally distributed", 
+    "FAIL: Non-normality detected"), "\n")
+```
+
+The Ljung-Box test on residuals (p = 0.16) does not reject H0 of no autocorrelation, confirming adequate capture of linear dependence.
+
+However, the Ljung-Box test on squared residuals (p near 0) and the ARCH-LM test both indicate strong ARCH effects. The squared residuals are highly autocorrelated, revealing volatility clustering that ARIMA cannot capture.
+
+The Jarque-Bera and Shapiro-Wilk tests reject normality, confirming the leptokurtic nature of financial returns with fat tails.
+
+In summary, ARIMA adequately models the conditional mean but fails to account for time-varying volatility and non-normal errors. These findings justify using ARMA-GARCH models with Student-t innovations.
+
+
+```{r arima-forecast, fig.height=8}
+# Generate forecasts
+h <- length(returns_test)
+forecast_arima <- forecast(arima_model, h = h)
+
+cat("=== Forecast Summary ===\n")
+cat("Forecast horizon:", h, "periods\n")
+cat("Mean forecast:", round(mean(forecast_arima$mean), 6), "\n")
+cat("Forecast converges to:", round(forecast_arima$mean[h], 6), "\n\n")
+
+# Plot forecast
+par(mfrow = c(2, 1))
+
+# Full forecast plot
+plot(forecast_arima, main = "ARIMA Forecast of Log-Returns",
+     xlab = "Time Index", ylab = "Return",
+     col = "steelblue", lwd = 2)
+
+# Zoomed view on test period
+plot(dates_test_arima, returns_test, type = "l", col = "black", lwd = 1,
+     main = "Actual vs Predicted Returns (Test Period)",
+     xlab = "Date", ylab = "Return",
+     ylim = range(c(returns_test, as.numeric(forecast_arima$mean),
+                    as.numeric(forecast_arima$lower[,2]),
+                    as.numeric(forecast_arima$upper[,2]))))
+lines(dates_test_arima, as.numeric(forecast_arima$mean), col = "blue", lwd = 2)
+
+# Confidence intervals
+polygon(c(dates_test_arima, rev(dates_test_arima)),
+        c(as.numeric(forecast_arima$lower[,2]), 
+          rev(as.numeric(forecast_arima$upper[,2]))),
+        col = rgb(0, 0, 1, 0.2), border = NA)
+polygon(c(dates_test_arima, rev(dates_test_arima)),
+        c(as.numeric(forecast_arima$lower[,1]), 
+          rev(as.numeric(forecast_arima$upper[,1]))),
+        col = rgb(0, 0, 1, 0.3), border = NA)
+
+legend("topright", 
+       legend = c("Actual", "Forecast", "80% CI", "95% CI"),
+       col = c("black", "blue", rgb(0,0,1,0.3), rgb(0,0,1,0.2)),
+       lty = c(1, 1, NA, NA), lwd = c(1, 2, NA, NA),
+       fill = c(NA, NA, rgb(0,0,1,0.3), rgb(0,0,1,0.2)),
+       border = NA, cex = 0.8)
+
+par(mfrow = c(1, 1))
+```
+
+For a stationary series like returns, ARIMA forecasts quickly converge to the unconditional mean (close to zero). The widening confidence bands reflect increasing uncertainty over time.
+
+The forecast line tends to be flat near zero while actual returns show high variability, illustrating that ARIMA captures the expected value but not volatility dynamics. For efficient markets, returns are nearly unpredictable, so ARIMA forecasts provide little advantage over simply predicting the mean return.
+
+```{r arima-price-forecast, fig.height=7}
+# Reconstruct price forecasts from return forecasts
+# P_t = P_{t-1} * exp(r_t)
+
+last_train_price <- df_arima$Close[n_train_arima]
+last_train_logprice <- df_arima$LogClose[n_train_arima]
+
+# Actual test prices
+actual_prices <- df_arima$Close[(n_train_arima + 1):n_obs]
+
+# Predicted prices from cumulative returns
+pred_returns <- as.numeric(forecast_arima$mean)
+pred_logprices <- last_train_logprice + cumsum(pred_returns)
+pred_prices <- exp(pred_logprices)
+
+# Confidence intervals for cumulative returns (proper calculation)
+# The variance of cumulative returns grows with horizon
+# Var(sum of h returns) ≈ h * sigma^2 for white noise forecasts
+sigma_resid <- sqrt(arima_model$sigma2)
+h_vec <- 1:length(pred_returns)
+
+# 95% CI: cumulative_return ± 1.96 * sqrt(h) * sigma
+cumsum_pred <- cumsum(pred_returns)
+ci_width <- 1.96 * sqrt(h_vec) * sigma_resid
+
+pred_lower_prices <- exp(last_train_logprice + cumsum_pred - ci_width)
+pred_upper_prices <- exp(last_train_logprice + cumsum_pred + ci_width)
+
+# Plot
+plot(dates_test_arima, actual_prices, type = "l", col = "black", lwd = 1.5,
+     main = "MSFT Stock Price: Actual vs ARIMA Prediction",
+     sub = "Price reconstructed from cumulative return forecasts",
+     xlab = "Date", ylab = "Price ($)",
+     ylim = range(c(actual_prices, pred_prices, pred_lower_prices, pred_upper_prices)))
+
+lines(dates_test_arima, pred_prices, col = "red", lwd = 2)
+
+# Confidence band
+polygon(c(dates_test_arima, rev(dates_test_arima)),
+        c(pred_lower_prices, rev(pred_upper_prices)),
+        col = rgb(1, 0, 0, 0.15), border = NA)
+
+# Starting point
+points(dates_test_arima[1], last_train_price, pch = 19, col = "green", cex = 1.5)
+
+legend("topleft", 
+       legend = c("Actual Price", "ARIMA Prediction", "95% CI", "Start Point"),
+       col = c("black", "red", rgb(1,0,0,0.3), "green"),
+       lty = c(1, 1, NA, NA), lwd = c(1.5, 2, NA, NA),
+       pch = c(NA, NA, 15, 19), pt.cex = c(NA, NA, 2, 1.5), cex = 0.8)
+```
+
+The predicted price remains roughly constant because ARIMA forecasts returns converging to zero, implying no cumulative price change. MSFT actually rose from around 100 dollars to 340 dollars (2018-2021), then declined to 240 dollars by end of 2022. This trend is completely missed by the ARIMA forecast.
+
+The 95% confidence interval widens with the square root of the horizon, reflecting the random walk nature of cumulative returns. The actual price breaks above the upper bound by mid-2020, demonstrating that ARIMA cannot capture sustained market trends. Pure time series models cannot anticipate price movements driven by fundamentals or sentiment.
+
+## 4.8 Model Evaluation Metrics
+
+```{r arima-evaluation, results='asis'}
+# Calculate forecast accuracy metrics
+forecast_values <- as.numeric(forecast_arima$mean)
+
+# Training data metrics
+train_fitted <- fitted(arima_model)
+train_residuals <- returns_train - train_fitted
+MAE_train <- mean(abs(train_residuals))
+MSE_train <- mean(train_residuals^2)
+RMSE_train <- sqrt(MSE_train)
+
+# Test data metrics
+MAE_test <- mean(abs(returns_test - forecast_values))
+MSE_test <- mean((returns_test - forecast_values)^2)
+RMSE_test <- sqrt(MSE_test)
+
+# Information criteria (from model on training data, recomputed on test)
+AIC_train <- AIC(arima_model)
+BIC_train <- BIC(arima_model)
+
+# Refit on test data to get test AIC/BIC
+arima_test <- Arima(returns_test, order = c(p_order, 0, q_order))
+AIC_test <- AIC(arima_test)
+BIC_test <- BIC(arima_test)
+
+# Create evaluation table
+eval_table <- data.frame(
+  Metric = c("MAE", "MSE", "RMSE", "AIC", "BIC"),
+  Training_Data = c(MAE_train, MSE_train, RMSE_train, AIC_train, BIC_train),
+  Test_Data = c(MAE_test, MSE_test, RMSE_test, AIC_test, BIC_test)
+)
+
+kable(eval_table, 
+      caption = paste0("Evaluation Metrics for ARIMA(", p_order, ",0,", q_order, ")"),
+      col.names = c("Metric", "Training Data", "Test Data"),
+      align = c("l", "r", "r"),
+      digits = 8)
+```
+
+The MAE and RMSE values are small because log-returns are typically small numbers. The slight increase on test data is minimal, indicating good generalization without overfitting. The difference in AIC/BIC between training and test sets is due to sample size differences rather than model degradation.
+
+## 4.9 Conclusion
+
+```{r arima-conclusion}
+cat("================================================================\n")
+cat("                    ARIMA MODELING SUMMARY\n")
+cat("================================================================\n\n")
+
+cat("MODEL SELECTED: ARIMA(", p_order, ",0,", q_order, ")\n\n", sep = "")
+
+cat("KEY FINDINGS:\n\n")
+
+cat("1. STATIONARITY:\n")
+cat("   - Log-prices are non-stationary (unit root)\n")
+cat("   - Log-returns are stationary → suitable for ARIMA\n\n")
+
+cat("2. MODEL ADEQUACY:\n")
+cat("   - Ljung-Box test:", ifelse(lb_test$p.value > 0.05, 
+    "PASS - residuals are white noise", "FAIL - autocorrelation remains"), "\n")
+cat("   - ARCH effects:", ifelse(arch_test_resid$p.value > 0.05,
+    "PASS - homoskedastic", "DETECTED - GARCH recommended"), "\n")
+cat("   - Normality:", ifelse(jb_test$p.value > 0.05,
+    "PASS - normal residuals", "FAIL - fat tails (typical for finance)"), "\n\n")
+
+cat("3. FORECAST PERFORMANCE:\n")
+cat("   - Return RMSE:", round(RMSE_test, 6), "\n")
+cat("   - Return MAE:", round(MAE_test, 6), "\n\n")
+
+cat("4. LIMITATIONS OF ARIMA FOR FINANCIAL DATA:\n")
+cat("   - Assumes constant variance (violated due to volatility clustering)\n")
+cat("   - Returns are near-white-noise (market efficiency)\n")
+cat("   - Forecasts converge quickly to the mean\n")
+cat("   - Does not capture fat tails in distribution\n\n")
+
+cat("5. RECOMMENDATION:\n")
+cat("   → ARIMA alone is insufficient for financial time series\n")
+cat("   → The ARMA-GARCH approach (Part 3) better captures both\n")
+cat("     mean dynamics and time-varying volatility\n")
+
+cat("\n================================================================\n")
+cat("                    END OF ARIMA ANALYSIS\n")
+cat("================================================================\n")
+```
+
+The ARIMA(4,0,0) model reveals typical characteristics of financial time series. Log-returns are stationary and suitable for ARIMA modeling. The Ljung-Box test confirms that residuals behave like white noise, so the AR(4) component captures the linear dependence structure.
+
+However, significant heteroskedasticity remains in the residuals (ARCH effects), and the Jarque-Bera test confirms non-normality with fat tails typical of financial data.
+
+ARIMA alone is insufficient for financial time series. While it adequately models the conditional mean, the ARMA-GARCH approach provides a more complete framework by capturing both mean dynamics and time-varying volatility.
+
+\newpage
+
+# ARMA-GARCH Modeling
+
+## Data Preparation
+
+```{r garch-data}
+getSymbols("MSFT", src = "yahoo", from = "2000-01-01", to = "2023-01-01", auto.assign = TRUE)
+
+df <- data.frame(
+  Date  = as.Date(zoo::index(MSFT)),
+  Close = as.numeric(Cl(MSFT))
+) %>%
+  arrange(Date) %>%
+  mutate(LogClose = log(Close), r = c(NA, diff(LogClose))) %>%
+  drop_na()
+
+r <- df$r
+```
+
+## Train/Test Split
+
+```{r garch-split}
+n <- length(r)
+n_train <- floor(0.8 * n)
+r_train <- r[1:n_train]
+r_test  <- r[(n_train + 1):n]
+
+cat("Training set:", n_train, "observations\n")
+cat("Test set:", length(r_test), "observations\n")
+```
+
+## ARMA Order Selection
+
+```{r arma-selection}
+arma_fit <- auto.arima(r_train, d = 0, seasonal = FALSE, stationary = TRUE,
+                       stepwise = FALSE, approximation = FALSE)
+
+p <- arma_fit$arma[1]
+q <- arma_fit$arma[2]
+
+cat("Selected model: ARMA(", p, ",", q, ")\n", sep = "")
+print(arma_fit)
+```
+
+## ARCH-LM Test
+
+```{r arch-test}
+res_arma <- residuals(arma_fit)
+arch_test <- ArchTest(res_arma, lags = 12)
+cat("ARCH-LM test p-value:", format(arch_test$p.value, scientific = TRUE), "\n")
+cat("Conclusion:", ifelse(arch_test$p.value < 0.05, "ARCH effects present → GARCH needed", "No ARCH effects"), "\n")
+```
+
+## ARMA-GARCH Estimation
+
+```{r garch-fit}
+spec <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+  mean.model = list(armaOrder = c(p, q), include.mean = TRUE),
+  distribution.model = "std"
+)
+
+fit <- ugarchfit(spec = spec, data = r_train, solver = "hybrid")
+show(fit)
+```
+
+## Residual Diagnostics
+
+```{r garch-diagnostics}
+z <- residuals(fit, standardize = TRUE)
+
+cat("=== Ljung-Box Tests ===\n")
+cat("On z_t:  "); print(Box.test(z, lag = 20, type = "Ljung-Box"))
+cat("On z_t²: "); print(Box.test(z^2, lag = 20, type = "Ljung-Box"))
+cat("ARCH-LM: "); print(ArchTest(z, lags = 12))
+```
+
+## Out-of-Sample Volatility Forecast
+
+```{r garch-forecast}
+roll <- ugarchroll(spec = spec, data = r, n.start = n_train, refit.every = 50,
+                   refit.window = "moving", solver = "hybrid", calculate.VaR = FALSE)
+
+roll_df <- as.data.frame(roll)
+sigma_prev <- roll_df$Sigma
+mu_prev <- roll_df$Mu
+
+m <- min(length(sigma_prev), length(r_test))
+sigma_prev <- sigma_prev[1:m]
+r_test <- r_test[1:m]
+
+corr_vol <- cor(sigma_prev, abs(r_test))
+cat("Correlation (predicted σ vs |r_t|):", round(corr_vol, 4), "\n")
+```
+
+## Model Summary
+
+```{r garch-summary}
+cat("=== Model Summary ===\n")
+cat(sprintf("Conditional mean: ARMA(%d,%d)\n", p, q))
+cat("Conditional variance: GARCH(1,1)\n")
+cat("Innovation distribution: Student-t\n\n")
+
+cat("Information criteria:\n")
+print(infocriteria(fit))
+
+cat("\nEstimated parameters:\n")
+print(coef(fit))
+```
+
+## Diagnostic Plots
+
+```{r garch-plots, fig.height=8}
+par(mfrow = c(2, 2))
+
+# Returns
+plot(df$Date[1:n_train], r_train, type = "l", main = "Log-Returns (Training)", xlab = "Date", ylab = "Return")
+
+# Conditional volatility
+sigma_train <- sigma(fit)
+plot(df$Date[1:n_train], sigma_train, type = "l", main = "Conditional Volatility σ_t", xlab = "Date", ylab = "σ_t")
+
+# Q-Q plot
+qqnorm(z, main = "Q-Q Plot (Standardized Residuals)")
+qqline(z, col = "red", lwd = 1.2)
+
+# Volatility forecast vs realized
+dates_test <- df$Date[(n_train + 1):(n_train + m)]
+plot(dates_test, abs(r_test), type = "l", col = "black", main = "Predicted vs Realized Volatility", xlab = "Date", ylab = "")
+lines(dates_test, sigma_prev, col = "red", lwd = 1.5)
+legend("topright", legend = c("|r_t|", "σ_t predicted"), col = c("black", "red"), lty = 1)
+
+par(mfrow = c(1, 1))
+```
+
+## Variance Evaluation
+
+```{r garch-variance}
+var_prev <- sigma_prev^2
+var_real <- r_test^2
+
+cat("Corr(predicted var, r²):", round(cor(var_prev, var_real), 4), "\n")
+cat("RMSE variance:", round(sqrt(mean((var_prev - var_real)^2)), 6), "\n")
+cat("MAE variance:", round(mean(abs(var_prev - var_real)), 6), "\n")
+cat("Persistence (α+β):", round(coef(fit)["alpha1"] + coef(fit)["beta1"], 4), "\n")
+```
+
+## Conclusion
+
+```{r garch-conclusion}
+ljung_box <- Box.test(z, lag = 20, type = "Ljung-Box")
+ljung_box_sq <- Box.test(z^2, lag = 20, type = "Ljung-Box")
+
+cat("================================================================\n")
+cat("                  ARMA-GARCH MODELING SUMMARY\n")
+cat("================================================================\n\n")
+
+cat("MODEL: ARMA(", p, ",", q, ")-GARCH(1,1) with Student-t\n\n", sep = "")
+
+parms <- coef(fit)
+persistence <- parms["alpha1"] + parms["beta1"]
+
+cat("1. CONDITIONAL MEAN:\n")
+cat("   - Ljung-Box on z_t: p =", round(ljung_box$p.value, 4),
+    ifelse(ljung_box$p.value > 0.05, "→ PASS\n\n", "→ FAIL\n\n"))
+
+cat("2. CONDITIONAL VARIANCE:\n")
+cat("   - α₁ =", round(parms["alpha1"], 4), ", β₁ =", round(parms["beta1"], 4), "\n")
+cat("   - Persistence (α+β) =", round(persistence, 4), "\n")
+cat("   - Ljung-Box on z_t²: p =", round(ljung_box_sq$p.value, 4),
+    ifelse(ljung_box_sq$p.value > 0.05, "→ PASS\n\n", "→ FAIL\n\n"))
+
+cat("3. DISTRIBUTION: Student-t (df =", round(parms["shape"], 2), ")\n\n")
+
+cat("4. VOLATILITY FORECAST: Corr =", round(corr_vol, 4), "\n")
+cat("================================================================\n")
+```
+
+The ARMA(4,0)-GARCH(1,1) model with Student-t innovations captures both the conditional mean and variance dynamics of MSFT returns.
+
+The Ljung-Box test on standardized residuals confirms no remaining autocorrelation. The high persistence (alpha + beta near 0.997) indicates near-IGARCH behavior with long-lasting volatility shocks, and the test on squared residuals confirms complete absorption of volatility clustering.
+
+The Student-t distribution with about 4 degrees of freedom provides realistic tail risk estimates. The correlation of 0.41 between predicted and realized volatility demonstrates useful predictive power for risk management.

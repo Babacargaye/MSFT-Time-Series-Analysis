@@ -1,0 +1,53 @@
+# R specific files
+.Rhistory
+.Rdata
+.RData
+.Ruserdata
+.Rproj.user/
+
+# R Environment Variables
+.Renviron
+
+# R packages
+packrat/
+renv/
+renv.lock
+
+# Compiled R files
+*.Rcheck/
+*.dll
+*.so
+*.dylib
+
+# Output files
+*.pdf
+*.html
+*.docx
+
+# Temporary files
+*~
+\#*\#
+.\#*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.Rproj
+
+# Data files (if large)
+*.csv
+*.xlsx
+*.xls
+
+# Cache
+*_cache/
+*_files/
