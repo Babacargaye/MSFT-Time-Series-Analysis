@@ -113,12 +113,3 @@ Note : Une connexion internet est nécessaire pour la première exécution.
 | Graphiques ne s'affichent pas | Redémarrez RStudio |
 
 
-## Auteurs
-
-ENSAI 3A, Promotion 2025-2026
-École Nationale de la Statistique et de l'Analyse de l'Information
-
-
-## Licence
-
-Ce projet est sous licence MIT. Vous êtes libre de l'utiliser, le modifier et le partager.
