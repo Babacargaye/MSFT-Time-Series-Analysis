@@ -1,124 +1,131 @@
-# Analyse de Séries Temporelles - Action MSFT
+# MSFT Time Series Analysis
 
-Projet ENSAI 3A - Séries Temporelles Avancées
+ENSAI 3A Project - Advanced Time Series
 
-## À Propos
+## Project Objective
 
-Ce projet analyse les rendements journaliers de l'action Microsoft (MSFT) de 2000 à 2023 en utilisant des modèles économétriques avancés :
+This project compares different approaches for modeling and predicting daily returns of Microsoft (MSFT) stock from 2000 to 2023:
 
-| Modèle | Objectif | Résultat |
-|--------|----------|----------|
-| ARIMA | Modéliser la moyenne conditionnelle | ARIMA(4,0,0) |
-| ARMA-GARCH | Capturer la volatilité | GARCH(1,1) + Student-t |
+1. **Classical Econometric Approach (R)**: ARIMA and GARCH models to capture temporal dynamics and volatility
+2. **Deep Learning Approach (Python)**: CNN-LSTM network for price and log-returns prediction
+
+| Approach | Models | Language | File |
+|----------|--------|----------|------|
+| Econometric | ARIMA(4,0,0) + GARCH(1,1) | R | `code_projet.Rmd` |
+| Deep Learning | CNN-LSTM | Python | `CNN_LSTM.ipynb` |
+
+
+## Project Structure
+
+```
+projet_ST/
+├── Rapport.pdf          <- Final report (PDF)
+├── code_projet.Rmd      <- R Analysis (ARIMA/GARCH)
+├── CNN_LSTM.ipynb       <- CNN-LSTM Model (Python/PyTorch)
+├── install_packages.R   <- R packages installation script
+├── README.md            <- This file
+└── LICENSE              <- MIT License
+```
 
 
 ## Installation
 
-### Prérequis
+### Requirements
 
-Assurez-vous d'avoir installé :
-- R (version 4.0+) : https://cran.r-project.org/
-- RStudio : https://posit.co/download/rstudio-desktop/
+**For R analysis:**
+- R (version 4.0+): https://cran.r-project.org/
+- RStudio: https://posit.co/download/rstudio-desktop/
 
-### Télécharger le Projet
+**For CNN-LSTM model (Python):**
+- Python 3.8+
+- Jupyter Notebook or VS Code
 
-Option A : Téléchargement direct
-1. Cliquez sur le bouton vert "Code" en haut de cette page
-2. Sélectionnez "Download ZIP"
-3. Extrayez le fichier ZIP
+### Download the Project
 
-Option B : Avec Git
 ```bash
-git clone https://github.com/YOUR_USERNAME/MSFT-Time-Series-Analysis.git
+git clone https://github.com/Babacargaye/MSFT-Time-Series-Analysis.git
+cd MSFT-Time-Series-Analysis
 ```
 
-### Installer les Packages R
+### Install R Packages
 
-Option rapide avec le script automatique :
-1. Ouvrez le fichier `install_packages.R` dans RStudio
-2. Cliquez sur "Source" (ou Ctrl+Shift+S)
-3. Attendez la fin de l'installation
+```r
+# In RStudio, run:
+source("install_packages.R")
+```
 
-Option manuelle :
+Or manually:
 ```r
 packages <- c("quantmod", "forecast", "rugarch", "tseries", 
               "FinTS", "moments", "ggplot2", "dplyr", 
               "zoo", "knitr", "urca", "tidyr", "lubridate")
-
 install.packages(packages)
 ```
 
-L'installation prend environ 2-3 minutes.
+### Install Python Packages
 
-
-## Comment Exécuter l'Analyse
-
-1. Ouvrir le fichier `code_projet.Rmd` dans RStudio
-
-2. Exécuter de deux façons :
-   - Tout le document : Cliquez sur Knit > Knit to PDF
-   - Chunk par chunk : Cliquez sur le bouton vert de chaque bloc de code
-
-3. Un rapport PDF sera généré automatiquement
-
-Conseil : Exécutez les chunks dans l'ordre (de haut en bas) pour éviter les erreurs de variables manquantes.
-
-
-## Structure du Projet
-
-```
-projet_ST/
-├── code_projet.Rmd      <- Fichier principal (ouvrir celui-ci)
-├── install_packages.R   <- Script d'installation automatique
-├── ARMA-GARCH.R         <- Code GARCH (référence)
-├── Imane.R              <- Scripts additionnels
-├── README.md            <- Ce fichier
-└── LICENSE              <- Licence MIT
+```bash
+pip install yfinance pandas numpy matplotlib torch scikit-learn
 ```
 
 
-## Résultats Principaux
+## Execution
 
-### Analyse ARIMA
-- Les log-rendements sont stationnaires (test ADF)
-- Modèle optimal : ARIMA(4,0,0)
-- Effets ARCH détectés, nécessite GARCH
+### R Analysis (ARIMA/GARCH)
 
-### Analyse ARMA-GARCH
-- Modèle : ARMA(4,0)-GARCH(1,1) avec innovations Student-t
-- Persistence de la volatilité : alpha + beta = 0.997
-- Corrélation prévision/réalisé : 0.41
-- Distribution à queues épaisses capturée (df = 4.23)
+1. Open `code_projet.Rmd` in RStudio
+2. Click **Knit > Knit to PDF** or run chunk by chunk
+
+### CNN-LSTM Model (Python)
+
+1. Open `CNN_LSTM.ipynb` in Jupyter or VS Code
+2. Run all cells in order
+
+The notebook contains two experiments:
+- **Closing price prediction** (MinMax normalized)
+- **Log-returns prediction**
 
 
-## Source des Données
+## Main Results
 
-Les données sont téléchargées automatiquement depuis Yahoo Finance :
+### ARIMA-GARCH Analysis (R)
+| Metric | Value |
+|--------|-------|
+| Mean model | ARIMA(4,0,0) |
+| Volatility model | GARCH(1,1) + Student-t |
+| Volatility persistence | α + β = 0.997 |
+| Degrees of freedom | df = 4.23 |
 
-- Action : MSFT (Microsoft)
-- Période : 01/01/2000 au 01/01/2023
-- Fréquence : Journalière
+### CNN-LSTM Model (Python)
+| Architecture | Details |
+|--------------|---------|
+| Conv1D | 2 layers (32 → 64 filters) |
+| MaxPooling | kernel_size=2 |
+| LSTM | hidden_size=50 |
+| Dropout | 0.4 |
+| Sequence | 60 days |
+
+Evaluated metrics: MSE, RMSE, MAE
+
+
+## Data Source
+
+Data is automatically downloaded from **Yahoo Finance** via:
+- R: `quantmod` package
+- Python: `yfinance` package
+
+| Parameter | Value |
+|-----------|-------|
+| Ticker | MSFT (Microsoft) |
+| Period | 2000-01-01 to 2023-12-31 |
+| Frequency | Daily |
 - Environ 5700 observations
 
-Note : Une connexion internet est nécessaire pour la première exécution.
 
 
-## Problèmes Fréquents
-
-| Problème | Solution |
-|----------|----------|
-| Error: package 'xxx' not found | Exécutez install.packages("xxx") |
-| Error in getSymbols() | Vérifiez votre connexion internet |
-| Knit to PDF échoue | Installez TinyTeX : tinytex::install_tinytex() |
-| Graphiques ne s'affichent pas | Redémarrez RStudio |
 
 
-## Auteurs
-
-ENSAI 3A, Promotion 2025-2026
-École Nationale de la Statistique et de l'Analyse de l'Information
 
 
-## Licence
 
-Ce projet est sous licence MIT. Vous êtes libre de l'utiliser, le modifier et le partager.
+

@@ -21,6 +21,7 @@ renv.lock
 
 # Output files
 *.pdf
+!Rapport.pdf
 *.html
 *.docx
 
